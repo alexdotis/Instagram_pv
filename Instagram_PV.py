@@ -84,10 +84,11 @@ class Instagram_pv:
         self.driver.close()
 
     def __init__(self, username, password, folder, name):
-        self.username = args.username
-        self.password = args.password
-        self.name = args.name
-        self.folder = args.filename
+        self.username = username
+        self.password = password
+        self.folder = folder
+        self.name = name
+        
         try:
             self.driver = webdriver.Chrome() # or you can pass \path\to\chromedriver.exe
         except WebDriverException as e:
