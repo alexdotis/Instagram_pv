@@ -1,7 +1,7 @@
 # Instagram_pv
 Download Images and Videos from specific profile in instagram
 
-If you have an error for **chromedriver** please you can pass the **chromedriver.exe** in my code
+If you have an error for **chromedriver** you can pass the **chromedriver.exe** in my code
 
 ```
 self.driver = webdriver.Chrome(\path\to\chromedriver.exe)
