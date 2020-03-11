@@ -89,7 +89,7 @@ class Instagram_pv:
         self.name = args.name
         self.folder = args.filename
         try:
-            self.driver = webdriver.Chrome("D:\downloads\chromedriver.exe")
+            self.driver = webdriver.Chrome() # or you can pass \path\to\chromedriver.exe
         except WebDriverException as e:
             print(str(e))
             sys.exit(1)
