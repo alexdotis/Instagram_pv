@@ -11,4 +11,4 @@ Also, you can download chromedriver.exe from here : https://chromedriver.chromiu
 
 Simple usage of code:
 
-```Instagram_pv.py -u example@hotmail.com -p mypassword -f myfile -n stackoverjoke```
+```Instagram_PV.py -u example@hotmail.com -p mypassword -f myfile -n stackoverjoke```
