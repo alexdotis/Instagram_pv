@@ -26,6 +26,12 @@ class Errors:
             self.cookies = cookies
 
     def availability(self):
+        """
+        Check The Profile Availability
+        From status_code and from graphql json that provides the link https://www.instagram.com/{username}/?__a=1
+        :return: True, If it's not private or its available
+        """
+
         search = requests.get(self.link, self.cookies)
         if search.status_code == 404:
             return "Sorry, this page isn't available."
@@ -45,9 +51,10 @@ class fetch_urls(threading.Thread):
         self.url = url
 
     def run(self):
-        """Extract Images and Videos"""
+        """Extract Images or Videos From Every Url Using json and graphql"""
         logging_page_id = requests.get(self.url.split()[0], cookies=COOKIES).json()
         try:
+            """Taking Url from Gallery Photos or Videos"""
             for i in range(len(logging_page_id['graphql']['shortcode_media']['edge_sidecar_to_children']['edges'])):
                 video = \
                     logging_page_id['graphql']['shortcode_media']['edge_sidecar_to_children']['edges'][i]['node'][
@@ -68,6 +75,7 @@ class fetch_urls(threading.Thread):
                     if image not in PICTURES:
                         PICTURES.append(image)
         except KeyError:
+            """Unique url from photo or Video"""
             image = logging_page_id['graphql']['shortcode_media']['display_url']
             if image not in PICTURES:
                 PICTURES.append(image)
@@ -84,18 +92,27 @@ class Instagram_pv:
         self.driver.close()
 
     def __init__(self, username, password, folder, name):
+        """
+
+        :param username: The username
+        :param password: The password
+        :param folder: The folder name that images and videos will be saved
+        :param name: The instagram name that will search
+        """
         self.username = username
         self.password = password
-        self.folder = folder
         self.name = name
-        
+        self.folder = folder
         try:
-            self.driver = webdriver.Chrome() # or you can pass \path\to\chromedriver.exe
+            self.driver = webdriver.Chrome()
         except WebDriverException as e:
             print(str(e))
             sys.exit(1)
 
     def control(self):
+        """
+        Create the folder name and raises an error if already exists
+        """
         if not os.path.exists(self.folder):
             os.mkdir(self.folder)
         else:
@@ -103,6 +120,7 @@ class Instagram_pv:
             raise FileExistsError("[*] Alredy Exists This Folder")
 
     def login(self):
+        """Login To Instagram"""
         self.driver.get("https://www.instagram.com/accounts/login")
         time.sleep(3)
         self.driver.find_element_by_name('username').send_keys(self.username)
@@ -111,6 +129,7 @@ class Instagram_pv:
         submit.submit()
         time.sleep(3)
         try:
+            """Check For Invalid Credentials"""
             var_error = self.driver.find_element_by_class_name("eiCW-").text
             if len(var_error) > 0:
                 print(var_error)
@@ -123,7 +142,8 @@ class Instagram_pv:
         except WebDriverException:
             pass
         time.sleep(2)
-        """Taking Cookies for requests json"""
+        """Taking Cookies To pass it in requests If the Profile is Private and you are following, 
+        otherwise the data from graphql will be incomplete"""
         cookies = self.driver.get_cookies()
         needed_cookies = ['csrftoken', 'ds_user_id', 'ig_did', 'mid', 'sessionid']
         global COOKIES
@@ -131,7 +151,7 @@ class Instagram_pv:
                    cookies[i]['name'] in needed_cookies}
 
         self.driver.get("https://www.instagram.com/{name}/".format(name=self.name))
-
+        """From The Class <Errors> Checking the Profile Availability"""
         error = Errors("https://www.instagram.com/{name}/".format(name=self.name), COOKIES).availability()
         if error is not True:
             print(error)
@@ -163,6 +183,7 @@ class Instagram_pv:
                 break
 
     def extraction_url(self):
+        """Gathering Images and Videos Using Threads From Class <fetch_urls>"""
         links = list(set(LINKS))
         print("[!] Ready for video - images".title())
         print("[*] extracting {links} posts , please wait...".format(links=len(links)).title())
@@ -178,6 +199,9 @@ class Instagram_pv:
         return re.content
 
     def _download_video(self, new_videos):
+        """
+        Saving the content of video in the file
+        """
         with open(
                 os.path.join(self.folder, "Video{}.mp4").format(
                     "".join([random.choice(string.digits) for i in range(20)])),
@@ -186,6 +210,7 @@ class Instagram_pv:
             f.write(content_of_video)
 
     def _images_download(self, new_pictures):
+        """Saving the content of picture in the file"""
         with open(
                 os.path.join(self.folder, "Image{}.jpg").format(
                     "".join([random.choice(string.digits) for i in range(20)])),
@@ -194,6 +219,7 @@ class Instagram_pv:
             f.write(content_of_picture)
 
     def downloading_video_images(self):
+        """Using multiprocessing for Saving Images and Videos"""
         print("[*] ready for saving images and videos!".title())
         new_pictures = list(set(PICTURES))
         new_videos = list(set(VIDEO))
