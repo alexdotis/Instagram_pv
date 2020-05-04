@@ -1,245 +1,254 @@
-import string
 import requests
-import os
 import time
 from selenium import webdriver
-from selenium.common.exceptions import WebDriverException
-import sys
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
 from multiprocessing.dummy import Pool
-import random
-import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
+from typing import *
 import argparse
-import threading
+import shutil
+from functools import reduce
 
-LINKS = []
-PICTURES = []
-VIDEO = []
+class PrivateException(Exception):
+    pass
 
 
-class Errors:
-    """Checking Instagram Profiles"""
+class InstagramPV:
+    MAX_WORKERS: int = 8
+    N_PROCESSES: int = 8
 
-    def __init__(self, link, cookies=None):
-        self.link = urllib.parse.urljoin(link, "?__a=1")
-        self.cookies = cookies
-        if self.cookies is not None:
-            self.cookies = cookies
+    BASE_URL = 'https://www.instagram.com/'
+    PROFILE_URL_FMT = BASE_URL + '{name}/'
+    LOGIN_URL = BASE_URL + 'accounts/login'
 
-    def availability(self):
-        """
-        Check The Profile Availability
-        From status_code and from graphql json that provides the link https://www.instagram.com/{username}/?__a=1
-        :return: True, If it's not private or its available
+    def __init__(self, username: str, password: str, folder: Path, profile_name: str):
         """
 
-        search = requests.get(self.link, self.cookies)
-        if search.status_code == 404:
-            return "Sorry, this page isn't available."
-        elif search.json()["graphql"]["user"]["is_private"] is True:
-            return "This Account is Private"
-        else:
-            return True
-
-
-class fetch_urls(threading.Thread):
-
-    def __init__(self, url, cookies=None):
-        threading.Thread.__init__(self)
-        self.cookies = cookies
-        if self.cookies is not None:
-            self.cookies = cookies
-        self.url = url
-
-    def run(self):
-        """Extract Images or Videos From Every Url Using json and graphql"""
-        logging_page_id = requests.get(self.url.split()[0], cookies=COOKIES).json()
-        try:
-            """Taking Url from Gallery Photos or Videos"""
-            for i in range(len(logging_page_id['graphql']['shortcode_media']['edge_sidecar_to_children']['edges'])):
-                video = \
-                    logging_page_id['graphql']['shortcode_media']['edge_sidecar_to_children']['edges'][i]['node'][
-                        "is_video"]
-                if video is True:
-                    video_url = \
-                        logging_page_id['graphql']['shortcode_media']['edge_sidecar_to_children']['edges'][i][
-                            'node'][
-                            "video_url"]
-                    if video_url not in VIDEO:
-                        VIDEO.append(video_url)
-
-                else:
-                    image = \
-                        logging_page_id['graphql']['shortcode_media']['edge_sidecar_to_children']['edges'][i][
-                            'node'][
-                            'display_url']
-                    if image not in PICTURES:
-                        PICTURES.append(image)
-        except KeyError:
-            """Unique url from photo or Video"""
-            image = logging_page_id['graphql']['shortcode_media']['display_url']
-            if image not in PICTURES:
-                PICTURES.append(image)
-
-            if logging_page_id['graphql']['shortcode_media']["is_video"] is True:
-                videos = logging_page_id['graphql']['shortcode_media']["video_url"]
-                if videos not in VIDEO:
-                    VIDEO.append(videos)
-
-
-class Instagram_pv:
-
-    def close(self):
-        self.driver.close()
-
-    def __init__(self, username, password, folder, name):
-        """
-
-        :param username: The username
-        :param password: The password
-        :param folder: The folder name that images and videos will be saved
-        :param name: The instagram name that will search
+        :param username: Username or E-mail for Log-in in Instagram
+        :param password: Password for Log-in in Instagram
+        :param folder: Folder name that will save the posts
+        :param profile_name: The profile name that will search
         """
         self.username = username
         self.password = password
-        self.name = name
         self.folder = folder
-        try:
-            self.driver = webdriver.Chrome()
-        except WebDriverException as e:
-            print(str(e))
-            sys.exit(1)
+        self.http_base = requests.Session()
+        self.profile_name = profile_name
+        self.links: List[str] = []
+        self.pictures: List[str] = []
+        self.videos: List[str] = []
+        self.posts: int = 0
+        self.driver = webdriver.Chrome()
 
-    def control(self):
-        """
-        Create the folder name and raises an error if already exists
-        """
-        if not os.path.exists(self.folder):
-            os.mkdir(self.folder)
-        else:
-            self.close()
-            raise FileExistsError("[*] Alredy Exists This Folder")
+    def __enter__(self):
+        return self
 
-    def login(self):
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.http_base.close()
+        self.driver.close()
+
+    def check_availability(self) -> None:
+        """
+        Checking Status code, Taking number of posts, Privacy and followed by viewer
+        Raise Error if the Profile is private and not following by viewer
+        :return: None
+        """
+        search = self.http_base.get(self.PROFILE_URL_FMT.format(name=self.profile_name), params={'__a': 1})
+        search.raise_for_status()
+
+        load_and_check = search.json()
+        user = (
+            load_and_check.get('graphql', {})
+                .get('user', {})
+        )
+        self.posts = (
+            user
+                .get('edge_owner_to_timeline_media', {})
+                .get('count')
+        )
+
+        privacy = (
+            user
+                .get('is_private')
+        )
+
+        followed_by_viewer = (
+            user
+                .get('followed_by_viewer')
+        )
+
+        if privacy and not followed_by_viewer:
+            raise PrivateException('[!] Account is private')
+
+    def create_folder(self) -> None:
+        """Create the folder name"""
+        self.folder.mkdir(exist_ok=True)
+
+    def login(self) -> None:
         """Login To Instagram"""
-        self.driver.get("https://www.instagram.com/accounts/login")
-        time.sleep(3)
+        self.driver.get(self.LOGIN_URL)
+        WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, 'form')))
         self.driver.find_element_by_name('username').send_keys(self.username)
         self.driver.find_element_by_name('password').send_keys(self.password)
         submit = self.driver.find_element_by_tag_name('form')
         submit.submit()
-        time.sleep(3)
+
+        """Check For Invalid Credentials"""
         try:
-            """Check For Invalid Credentials"""
-            var_error = self.driver.find_element_by_class_name("eiCW-").text
-            if len(var_error) > 0:
-                print(var_error)
-                sys.exit(1)
-        except WebDriverException:
+            var_error = WebDriverWait(self.driver, 4).until(EC.presence_of_element_located((By.CLASS_NAME, 'eiCW-')))
+            raise ValueError(var_error.text)
+        except TimeoutException:
             pass
 
         try:
-            self.driver.find_element_by_xpath('//button[text()="Not Now"]').click()
-        except WebDriverException:
+            """Close Notifications"""
+            notifications = WebDriverWait(self.driver, 20).until(
+                EC.presence_of_element_located((By.XPATH, '//button[text()="Not Now"]')))
+            notifications.click()
+        except NoSuchElementException:
             pass
-        time.sleep(2)
-        """Taking Cookies To pass it in requests If the Profile is Private and you are following, 
-        otherwise the data from graphql will be incomplete"""
-        cookies = self.driver.get_cookies()
-        needed_cookies = ['csrftoken', 'ds_user_id', 'ig_did', 'mid', 'sessionid']
-        global COOKIES
-        COOKIES = {cookies[i]['name']: cookies[i]['value'] for i in range(len(cookies)) if
-                   cookies[i]['name'] in needed_cookies}
 
-        self.driver.get("https://www.instagram.com/{name}/".format(name=self.name))
-        """From The Class <Errors> Checking the Profile Availability"""
-        error = Errors("https://www.instagram.com/{name}/".format(name=self.name), COOKIES).availability()
-        if error is not True:
-            print(error)
-            self.close()
-            sys.exit(1)
-        else:
-            self._scroll_down()
+        """Taking cookies"""
+        cookies = {
+            cookie['name']: cookie['value']
+            for cookie in self.driver.get_cookies()
+        }
 
-    def _get_href(self):
-        elements = self.driver.find_elements_by_xpath("//a[@href]")
+        self.http_base.cookies.update(cookies)
+
+        """Check for availability"""
+        self.check_availability()
+
+        self.driver.get(self.PROFILE_URL_FMT.format(name=self.profile_name))
+
+        self.scroll_down()
+
+    def posts_urls(self) -> None:
+        """Taking the URLs from posts and appending in self.links"""
+        elements = self.driver.find_elements_by_xpath('//a[@href]')
         for elem in elements:
-            urls = elem.get_attribute("href")
-            if "p" in urls.split("/"):
-                LINKS.append(urls)
+            urls = elem.get_attribute('href')
+            if urls not in self.links and 'p' in urls.split('/'):
+                self.links.append(urls)
 
-    def _scroll_down(self):
-        """Taking hrefs while scrolling down"""
-        end_scroll = []
+    def scroll_down(self) -> None:
+        """Scrolling down the page and taking the URLs"""
+        last_height = 0
         while True:
-            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(2)
-            self._get_href()
-            time.sleep(2)
+            self.driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+            time.sleep(1)
+            self.posts_urls()
+            time.sleep(1)
             new_height = self.driver.execute_script("return document.body.scrollHeight")
-            end_scroll.append(new_height)
-            if end_scroll.count(end_scroll[-1]) > 4:
-                self.close()
-                self.extraction_url()
+            if new_height == last_height:
                 break
+            last_height = new_height
+        self.submit_links()
 
-    def extraction_url(self):
-        """Gathering Images and Videos Using Threads From Class <fetch_urls>"""
-        links = list(set(LINKS))
-        print("[!] Ready for video - images".title())
-        print("[*] extracting {links} posts , please wait...".format(links=len(links)).title())
-        for url in LINKS:
-            new_link = urllib.parse.urljoin(url, '?__a=1')
-            fetch_urls(new_link).start()
-        for thread in threading.enumerate():
-            if thread is not threading.currentThread():
-                thread.join()
+    def submit_links(self) -> None:
+        """Gathering Images and Videos and pass to function <fetch_url> Using ThreadPoolExecutor"""
 
-    def content_of_url(self, url):
-        re = requests.get(url)
-        return re.content
+        self.create_folder()
 
-    def _download_video(self, new_videos):
+        print('[!] Ready for video - images'.title())
+        print(f'[*] extracting {len(self.links)} posts , please wait...'.title())
+
+        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+            for link in self.links:
+                executor.submit(self.fetch_url, link)
+
+    def fetch_url(self, url: str) -> None:
         """
-        Saving the content of video in the file
+        This function extracts images and videos
+        :param url: Taking the url
+        :return None
         """
-        with open(
-                os.path.join(self.folder, "Video{}.mp4").format(
-                    "".join([random.choice(string.digits) for i in range(20)])),
-                "wb") as f:
-            content_of_video = self.content_of_url(new_videos)
-            f.write(content_of_video)
+        logging_page_id = self.http_base.get(url, params={'__a': 1}).json()
 
-    def _images_download(self, new_pictures):
-        """Saving the content of picture in the file"""
-        with open(
-                os.path.join(self.folder, "Image{}.jpg").format(
-                    "".join([random.choice(string.digits) for i in range(20)])),
-                "wb") as f:
-            content_of_picture = self.content_of_url(new_pictures)
-            f.write(content_of_picture)
+        if self.get_fields(logging_page_id, '__typename') == 'GraphImage':
+            image_url = self.get_fields(logging_page_id, 'display_url')
+            self.pictures.append(image_url)
 
-    def downloading_video_images(self):
+        elif self.get_fields(logging_page_id, '__typename') == 'GraphVideo':
+            video_url = self.get_fields(logging_page_id, 'video_url')
+            self.videos.append(video_url)
+
+        elif self.get_fields(logging_page_id, '__typename') == 'GraphSidecar':
+            for sidecar in self.get_fields(logging_page_id, 'edge_sidecar_to_children', 'edges'):
+                if self.get_fields(sidecar, '__typename') == 'GraphImage':
+                    image_url = self.get_fields(sidecar, 'display_url')
+                    self.pictures.append(image_url)
+                else:
+                    video_url = self.get_fields(sidecar, 'video_url')
+                    self.videos.append(video_url)
+        else:
+            print(f'Warning {url}: has unknown type of {self.get_fields(logging_page_id,"__typename")}')
+
+    @staticmethod
+    def get_fields(nodes: Dict[str, Any], *keys: Iterable[str]) -> Any:
+        """
+        :param nodes: The json data from the link using only the first two keys 'graphql' and 'shortcode_media'
+        :param keys: Keys that will be add to the nodes and will have the results of 'type' or 'URL'
+        :return: The value of the key <fields>
+        """
+        media = ['graphql', 'shortcode_media', *keys]
+        if list(nodes.keys())[0] == 'node':
+            media = ['node', *keys]
+        field = reduce(dict.get, media, nodes)
+        return field
+
+    def download_video(self, new_videos: Tuple[int, str]) -> None:
+        """
+        Saving the video content
+        :param new_videos: Tuple[int,str]
+        :return: None
+        """
+        number, link = new_videos
+
+        with open(self.folder / f'Video{number}.mp4', 'wb') as f, \
+                self.http_base.get(link, stream=True) as response:
+            shutil.copyfileobj(response.raw, f)
+
+    def images_download(self, new_pictures: Tuple[int, str]) -> None:
+        """
+        Saving the picture content
+        :param new_pictures: Tuple[int, str]
+        :return: None
+        """
+
+        number, link = new_pictures
+        with open(self.folder / f'Image{number}.jpg', 'wb') as f, \
+                self.http_base.get(link, stream=True) as response:
+            shutil.copyfileobj(response.raw, f)
+
+    def downloading_video_images(self) -> None:
         """Using multiprocessing for Saving Images and Videos"""
-        print("[*] ready for saving images and videos!".title())
-        new_pictures = list(set(PICTURES))
-        new_videos = list(set(VIDEO))
-        pool = Pool(8)
-        pool.map(self._images_download, new_pictures)
-        pool.map(self._download_video, new_videos)
-        print("[+] done".title())
+        print('[*] ready for saving images and videos!'.title())
+        picture_data = enumerate(self.pictures)
+        video_data = enumerate(self.videos)
+        pool = Pool(self.N_PROCESSES)
+        pool.map(self.images_download, picture_data)
+        pool.map(self.download_video, video_data)
+        print('[+] Done')
+
+
+def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('-U', '--username', help='Username or your email of your account', action='store',
+                        required=True)
+    parser.add_argument('-P', '--password', help='Password of your account', action='store', required=True)
+    parser.add_argument('-F', '--filename', help='Filename for storing data', action='store', required=True)
+    parser.add_argument('-T', '--target', help='Profile name to search', action='store', required=True)
+    args = parser.parse_args()
+    with InstagramPV(args.username, args.password, Path(args.filename), args.target) as pv:
+        pv.login()
+        pv.downloading_video_images()
+
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("-u", "--username", help='Username or your email of your account', action="store",
-                        required=True)
-    parser.add_argument("-p", "--password", help='Password of your account', action="store", required=True)
-    parser.add_argument("-f", "--filename", help='Filename for storing data', action="store", required=True)
-    parser.add_argument("-n", "--name", help='Name to search', action="store", required=True)
-    args = parser.parse_args()
-
-    ipv = Instagram_pv(args.username, args.password, args.filename, args.name)
-    ipv.control()
-    ipv.login()
-    ipv.downloading_video_images()
+    main()
