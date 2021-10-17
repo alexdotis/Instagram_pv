@@ -11,6 +11,7 @@ from typing import *
 import argparse
 import shutil
 from functools import reduce
+from pathlib import Path
 
 class PrivateException(Exception):
     pass
