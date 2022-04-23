@@ -10,8 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import *
 import argparse
 import shutil
-from functools import reduce
 from pathlib import Path
+
 
 class PrivateException(Exception):
     pass
@@ -42,7 +42,7 @@ class InstagramPV:
         self.pictures: List[str] = []
         self.videos: List[str] = []
         self.posts: int = 0
-        self.driver = webdriver.Chrome()
+        self.driver = webdriver.Chrome('/home/alekos/Downloads/chromedriver')
 
     def __enter__(self):
         return self
@@ -57,28 +57,29 @@ class InstagramPV:
         Raise Error if the Profile is private and not following by viewer
         :return: None
         """
-        search = self.http_base.get(self.PROFILE_URL_FMT.format(name=self.profile_name), params={'__a': 1})
+        search = self.http_base.get(self.PROFILE_URL_FMT.format(
+            name=self.profile_name), params={'__a': 1})
         search.raise_for_status()
 
         load_and_check = search.json()
         user = (
             load_and_check.get('graphql', {})
-                .get('user', {})
+            .get('user', {})
         )
         self.posts = (
             user
-                .get('edge_owner_to_timeline_media', {})
-                .get('count')
+            .get('edge_owner_to_timeline_media', {})
+            .get('count')
         )
 
         privacy = (
             user
-                .get('is_private')
+            .get('is_private')
         )
 
         followed_by_viewer = (
             user
-                .get('followed_by_viewer')
+            .get('followed_by_viewer')
         )
 
         if privacy and not followed_by_viewer:
@@ -91,15 +92,22 @@ class InstagramPV:
     def login(self) -> None:
         """Login To Instagram"""
         self.driver.get(self.LOGIN_URL)
-        WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, 'form')))
-        self.driver.find_element_by_name('username').send_keys(self.username)
-        self.driver.find_element_by_name('password').send_keys(self.password)
-        submit = self.driver.find_element_by_tag_name('form')
+        WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, 'form')))
+
+        self.driver.find_element(
+            by=By.NAME, value='username').send_keys(self.username)
+
+        self.driver.find_element(
+            by=By.NAME, value='password').send_keys(self.password)
+
+        submit = self.driver.find_element(by=By.TAG_NAME, value='form')
         submit.submit()
 
         """Check For Invalid Credentials"""
         try:
-            var_error = WebDriverWait(self.driver, 4).until(EC.presence_of_element_located((By.CLASS_NAME, 'eiCW-')))
+            var_error = WebDriverWait(self.driver, 4).until(
+                EC.presence_of_element_located((By.CLASS_NAME, 'eiCW-')))
             raise ValueError(var_error.text)
         except TimeoutException:
             pass
@@ -129,7 +137,8 @@ class InstagramPV:
 
     def posts_urls(self) -> None:
         """Taking the URLs from posts and appending in self.links"""
-        elements = self.driver.find_elements_by_xpath('//a[@href]')
+
+        elements = self.driver.find_elements(by=By.XPATH, value='//a[@href]')
         for elem in elements:
             urls = elem.get_attribute('href')
             if urls not in self.links and 'p' in urls.split('/'):
@@ -139,11 +148,13 @@ class InstagramPV:
         """Scrolling down the page and taking the URLs"""
         last_height = 0
         while True:
-            self.driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+            self.driver.execute_script(
+                'window.scrollTo(0, document.body.scrollHeight);')
             time.sleep(1)
             self.posts_urls()
             time.sleep(1)
-            new_height = self.driver.execute_script("return document.body.scrollHeight")
+            new_height = self.driver.execute_script(
+                "return document.body.scrollHeight")
             if new_height == last_height:
                 break
             last_height = new_height
@@ -155,7 +166,8 @@ class InstagramPV:
         self.create_folder()
 
         print('[!] Ready for video - images'.title())
-        print(f'[*] extracting {len(self.links)} posts , please wait...'.title())
+        print(
+            f'[*] extracting {len(self.links)} posts , please wait...'.title())
 
         with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
             for link in self.links:
@@ -169,37 +181,23 @@ class InstagramPV:
         """
         logging_page_id = self.http_base.get(url, params={'__a': 1}).json()
 
-        if self.get_fields(logging_page_id, '__typename') == 'GraphImage':
-            image_url = self.get_fields(logging_page_id, 'display_url')
-            self.pictures.append(image_url)
+        items = logging_page_id['items'][0]
 
-        elif self.get_fields(logging_page_id, '__typename') == 'GraphVideo':
-            video_url = self.get_fields(logging_page_id, 'video_url')
+        media_type = items['media_type']
+
+        if media_type == 1:
+            picture_url = items['image_versions2']['candidates'][0]['url']
+            self.pictures.append(picture_url)
+        elif media_type == 2:
+            video_url = items['video_versions'][0]['url']
             self.videos.append(video_url)
-
-        elif self.get_fields(logging_page_id, '__typename') == 'GraphSidecar':
-            for sidecar in self.get_fields(logging_page_id, 'edge_sidecar_to_children', 'edges'):
-                if self.get_fields(sidecar, '__typename') == 'GraphImage':
-                    image_url = self.get_fields(sidecar, 'display_url')
-                    self.pictures.append(image_url)
-                else:
-                    video_url = self.get_fields(sidecar, 'video_url')
-                    self.videos.append(video_url)
+        elif media_type == 8:
+            for image in items['carousel_media']:
+                image_url = image['image_versions2']['candidates'][0]['url']
+                self.pictures.append(image_url)
         else:
-            print(f'Warning {url}: has unknown type of {self.get_fields(logging_page_id,"__typename")}')
-
-    @staticmethod
-    def get_fields(nodes: Dict[str, Any], *keys: Iterable[str]) -> Any:
-        """
-        :param nodes: The json data from the link using only the first two keys 'graphql' and 'shortcode_media'
-        :param keys: Keys that will be add to the nodes and will have the results of 'type' or 'URL'
-        :return: The value of the key <fields>
-        """
-        media = ['graphql', 'shortcode_media', *keys]
-        if list(nodes.keys())[0] == 'node':
-            media = ['node', *keys]
-        field = reduce(dict.get, media, nodes)
-        return field
+            print(
+                f'Warning {url}: has unknown type of {media_type}')
 
     def download_video(self, new_videos: Tuple[int, str]) -> None:
         """
@@ -218,6 +216,7 @@ class InstagramPV:
         Saving the picture content
         :param new_pictures: Tuple[int, str]
         :return: None
+
         """
 
         number, link = new_pictures
@@ -241,14 +240,17 @@ def main():
 
     parser.add_argument('-U', '--username', help='Username or your email of your account', action='store',
                         required=True)
-    parser.add_argument('-P', '--password', help='Password of your account', action='store', required=True)
-    parser.add_argument('-F', '--filename', help='Filename for storing data', action='store', required=True)
-    parser.add_argument('-T', '--target', help='Profile name to search', action='store', required=True)
+    parser.add_argument(
+        '-P', '--password', help='Password of your account', action='store', required=True)
+    parser.add_argument(
+        '-F', '--filename', help='Filename for storing data', action='store', required=True)
+    parser.add_argument(
+        '-T', '--target', help='Profile name to search', action='store', required=True)
     args = parser.parse_args()
+
     with InstagramPV(args.username, args.password, Path(args.filename), args.target) as pv:
         pv.login()
         pv.downloading_video_images()
-
 
 
 if __name__ == '__main__':
